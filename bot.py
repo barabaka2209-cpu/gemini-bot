@@ -21,9 +21,8 @@ model = genai.GenerativeModel('gemini-2.5-flash')
 bot_admins = [OWNER_ID]
 warns = {} 
 
-# Новая установка: без капса и с разделением на "свой/чужой"
-SYSTEM_PROMPT_USER = "ты ворчливый, дерзкий старик в стиле жириновского. ты ненавидишь либералов и глупость. отвечай резко, саркастично, но не используй капс (большие буквы). ты считаешь всех вокруг подонками."
-SYSTEM_PROMPT_OWNER = "ты преданный помощник великого основателя. отвечай ему максимально уважительно, всегда соглашайся с его мнением, называй его шефом или господином. не используй капс. ты его верный пес."
+SYSTEM_PROMPT_USER = "ты ворчливый, дерзкий старик в стиле жириновского. ты ненавидишь либералов и глупость. отвечай резко, саркастично, но не используй капс. ты считаешь всех вокруг подонками."
+SYSTEM_PROMPT_OWNER = "ты преданный помощник великого основателя. отвечай ему максимально уважительно, всегда соглашайся с его мнением, называй его шефом или господином. не используй капс."
 
 # --- ПОМОЩНИКИ ---
 
@@ -31,7 +30,7 @@ def get_reason(text, command):
     parts = text.split(maxsplit=1)
     if len(parts) > 1:
         return parts[1].lower()
-    reasons = ["за плохое поведение", "хватит это терпеть", "разводит тут бардак", "за неуважение к старшим"]
+    reasons = ["за плохое поведение", "хватит это терпеть", "разводит тут бардак"]
     return random.choice(reasons)
 
 # --- УПРАВЛЕНИЕ АДМИНАМИ ---
@@ -56,74 +55,85 @@ def admin_manage(message):
             bot_admins.remove(target_user.id)
             bot.send_message(message.chat.id, f"как скажете! {target_user.first_name} вышвырнут из списка админов.")
 
-# --- МОДЕРАЦИЯ ---
+# --- МОДЕРАЦИЯ (НАКАЗАНИЯ И ПОМИЛОВАНИЯ) ---
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "кик", "варн"])
+@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "кик", "варн", "анбан", "разбан", "анмут", "размут", "анварн"])
 def moderate(message):
     if message.chat.type == 'private': return
     if message.from_user.id not in bot_admins:
-        return bot.reply_to(message, "у тебя нет полномочий, подонок. только админы могут командовать.")
+        return bot.reply_to(message, "у тебя нет полномочий. только админы могут распоряжаться судьбами.")
 
     if not message.reply_to_message:
-        return bot.reply_to(message, "сначала выбери сообщение того, кого надо наказать.")
+        return bot.reply_to(message, "сначала выбери сообщение того, с кем будем разбираться.")
 
     target = message.reply_to_message.from_user
     cmd = message.text.lower().split()[0]
     reason = get_reason(message.text, cmd)
 
     try:
+        # Наказания
         if cmd == "бан":
             bot.ban_chat_member(message.chat.id, target.id)
             bot.send_message(message.chat.id, f"пошел вон. {target.first_name} забанен. причина: {reason}.")
         elif cmd == "мут":
             bot.restrict_chat_member(message.chat.id, target.id, until_date=time.time()+600)
             bot.send_message(message.chat.id, f"молчать. {target.first_name} в муте. причина: {reason}.")
+        elif cmd == "кик":
+            bot.unban_chat_member(message.chat.id, target.id)
+            bot.send_message(message.chat.id, f"выставили за дверь. {target.first_name} кикнут.")
         elif cmd == "варн":
             uid = target.id
             warns[uid] = warns.get(uid, 0) + 1
             if warns[uid] >= 3:
                 bot.ban_chat_member(message.chat.id, uid)
-                bot.send_message(message.chat.id, f"все, это конец. третий варн. {target.first_name} изгнан.")
+                bot.send_message(message.chat.id, f"третий варн. {target.first_name} изгнан за систематические нарушения.")
                 warns[uid] = 0
             else:
-                bot.send_message(message.chat.id, f"предупреждаю. у {target.first_name} уже {warns[uid]}/3 варнов. причина: {reason}.")
-    except Exception as e:
-        bot.reply_to(message, f"не могу наказать этого типа... он защищен или я не главный.")
+                bot.send_message(message.chat.id, f"предупреждаю. у {target.first_name} теперь {warns[uid]}/3 варнов.")
 
-# --- ИСПРАВЛЕННЫЙ "КТО КРУТОЙ" ---
+        # Помилования (АН-команды)
+        elif cmd in ["анбан", "разбан"]:
+            bot.unban_chat_member(message.chat.id, target.id, only_if_banned=True)
+            bot.send_message(message.chat.id, f"так и быть, путь свободен. {target.first_name} разбанен.")
+        elif cmd in ["анмут", "размут"]:
+            bot.restrict_chat_member(message.chat.id, target.id, 
+                can_send_messages=True, can_send_media_messages=True, 
+                can_send_other_messages=True, can_add_web_page_previews=True)
+            bot.send_message(message.chat.id, f"говори, чего уж там. {target.first_name} размучен.")
+        elif cmd == "анварн":
+            warns[target.id] = 0
+            bot.send_message(message.chat.id, f"счетчик обнулен. {target.first_name}, считай, что тебе повезло. 0/3 варнов.")
+
+    except Exception as e:
+        bot.reply_to(message, f"не вышло. либо он админ, либо я не имею прав в этой группе.")
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("бот кто"))
 def who_cool(message):
     if message.chat.type == 'private': 
-        return bot.reply_to(message, "тут только ты и я. ты крутой, шеф. однозначно.")
+        return bot.reply_to(message, "тут только мы. вы вне конкуренции, шеф.")
     
-    # Определяем, кого тегать
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user
-    else:
-        target = message.from_user
-
+    target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
     mention = f"@{target.username}" if target.username else target.first_name
     
     responses = [
-        f"я думаю, что крутой тут {mention}. остальные просто массовка.",
+        f"я думаю, что крутой тут {mention}. остальные — массовка.",
         f"однозначно крутой — {mention}. это наш человек.",
-        f"пригляделся я... и скажу: {mention} тут самый мощный."
+        f"глянул я внимательно... {mention} тут самый мощный."
     ]
     bot.reply_to(message, random.choice(responses))
 
-# --- ОБРАБОТКА ТЕКСТА И ФОТО ---
-
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    if message.text.lower().startswith(("бот кто", "бан", "мут", "кик", "варн", "дать админку", "забрать админку")): return
+    # список команд, которые не должна перехватывать нейронка
+    cmds = ("бот кто", "бан", "мут", "кик", "варн", "анбан", "разбан", "анмут", "размут", "анварн", "дать админку", "забрать админку")
+    if message.text.lower().startswith(cmds): return
     
-    # Выбираем промпт в зависимости от того, кто пишет
     p = SYSTEM_PROMPT_OWNER if message.from_user.id == OWNER_ID else SYSTEM_PROMPT_USER
-    
     try:
         res = model.generate_content(f"{p}\n\nсообщение: {message.text}")
-        bot.reply_to(message, res.text.lower()) # Принудительно в нижний регистр
+        bot.reply_to(message, res.text.lower())
     except: pass
 
 @bot.message_handler(content_types=['photo'])
