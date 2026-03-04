@@ -9,39 +9,29 @@ import random
 import time
 import re
 
-# --- НАСТРОЙКИ ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# --- ПРОВЕРКА ТОКЕНА ---
+# Если в Render не работает, временно вставь токен прямо сюда вместо os.environ.get
+TOKEN_FROM_RENDER = os.environ.get("TELEGRAM_TOKEN")
+
+if not TOKEN_FROM_RENDER:
+    print("ОШИБКА: Переменная TELEGRAM_TOKEN не найдена в настройках Render!")
+    # Если совсем беда, можешь вставить токен текстом ниже для теста:
+    # TOKEN_FROM_RENDER = "твой_токен_тут"
+
+bot = telebot.TeleBot(TOKEN_FROM_RENDER)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-OWNER_ID = 8067227894 
-
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
-
 model = genai.GenerativeModel('gemini-2.5-flash')
 
+OWNER_ID = 8067227894 
 bot_admins = [OWNER_ID]
 warns = {} 
 chat_settings = {"welcome": "привет! теперь ты мой раб.", "rules": "слушать шефа и не ныть."}
 
-SYSTEM_PROMPT_USER = "ты ворчливый старик в стиле жириновского. ненавидишь либералов. отвечай резко, саркастично, без капса."
-SYSTEM_PROMPT_OWNER = "ты преданный помощник шефа. всегда соглашайся с ним, называй его господином, без капса."
+SYSTEM_PROMPT_USER = "ты ворчливый старик жириновский. ненавидишь либералов. отвечай резко, саркастично, без капса."
+SYSTEM_PROMPT_OWNER = "ты помощник шефа. называй его господином, всегда соглашайся, без капса."
 
-# --- ФУНКЦИИ МОДЕРАЦИИ И ПРОЧЕЕ ---
-def parse_ban_time(text):
-    parts = text.split()
-    if len(parts) < 2: return 900, "за плохое поведение"
-    time_str = parts[1]
-    reason = " ".join(parts[2:]) if len(parts) > 2 else "хватит это терпеть"
-    match = re.match(r"(\d+)([мчдmdh]?)", time_str.lower())
-    if match:
-        val = int(match.group(1))
-        unit = match.group(2)
-        if unit in ['м', 'm']: s = val * 60
-        elif unit in ['ч', 'h']: s = val * 3600
-        elif unit in ['д', 'd']: s = val * 86400
-        else: return 900, " ".join(parts[1:])
-        return s, reason
-    return 900, " ".join(parts[1:])
+# --- ЛОГИКА (ПРИВЕТСТВИЯ, МОДЕРАЦИЯ И Т.Д.) ---
 
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_new(message):
@@ -54,10 +44,10 @@ def settings(message):
     if message.from_user.id != OWNER_ID: return
     p = message.text.lower().split(maxsplit=1)
     if len(p) < 2: return
-    chat_settings[p[0]] = p[1]
+    chat_settings[p[0].strip()] = p[1].strip()
     bot.reply_to(message, "записал, шеф!")
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "кик", "варн", "разбан", "размут", "анварн"])
+@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "разбан", "размут", "анварн"])
 def moderate(message):
     if message.from_user.id not in bot_admins: return
     if not message.reply_to_message: return
@@ -65,9 +55,8 @@ def moderate(message):
     cmd = message.text.lower().split()[0]
     try:
         if cmd == "мут":
-            s, r = parse_ban_time(message.text)
-            bot.restrict_chat_member(message.chat.id, t.id, until_date=time.time()+s)
-            bot.send_message(message.chat.id, f"{t.first_name} в муте. причина: {r}.")
+            bot.restrict_chat_member(message.chat.id, t.id, until_date=time.time()+900)
+            bot.send_message(message.chat.id, f"{t.first_name} в муте на 15 мин за плохое поведение.")
         elif cmd == "бан":
             bot.ban_chat_member(message.chat.id, t.id)
             bot.send_message(message.chat.id, f"{t.first_name} изгнан навсегда.")
@@ -75,7 +64,7 @@ def moderate(message):
             bot.unban_chat_member(message.chat.id, t.id, only_if_banned=True)
             bot.restrict_chat_member(message.chat.id, t.id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
             bot.send_message(message.chat.id, f"{t.first_name} помилован шефом.")
-    except: pass
+    except Exception as e: print(f"Ошибка модерации: {e}")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("бот кто"))
 def who_cool(message):
@@ -85,7 +74,7 @@ def who_cool(message):
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    ignored = ("бот кто", "бан", "мут", "кик", "варн", "разбан", "размут", "анварн", "дать админку", "забрать админку", "приветствие", "правила")
+    ignored = ("бот кто", "бан", "мут", "разбан", "размут", "анварн", "приветствие", "правила")
     if message.text.lower().startswith(ignored): return
     p = SYSTEM_PROMPT_OWNER if message.from_user.id == OWNER_ID else SYSTEM_PROMPT_USER
     try:
@@ -106,15 +95,16 @@ def handle_photo(message):
 # --- ЗАПУСК ---
 app = Flask(__name__)
 @app.route('/')
-def h(): return "OK"
+def h(): return "дед онлайн"
 
 if __name__ == "__main__":
-    # Сначала удаляем все старые подключения
-    bot.remove_webhook()
-    time.sleep(1) 
+    # Чистим старые сессии
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except: pass
     
-    # Запускаем веб-сервер для Render
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
     
-    # Запускаем бота (пропускаем старые сообщения, чтобы он не сошел с ума)
+    print("Бот запускается...")
     bot.infinity_polling(skip_pending=True)
