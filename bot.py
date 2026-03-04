@@ -5,7 +5,7 @@ from io import BytesIO
 from PIL import Image
 from flask import Flask
 import threading
-import random  # Для разнообразия в комментариях дедушки
+import random
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -13,81 +13,66 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
-# СТАВИМ ТУ САМУЮ КРУТУЮ И НОВУЮ МОДЕЛЬ!
+# Наша крутая модель
 MODEL_NAME = 'gemini-2.5-flash'
 model = genai.GenerativeModel(MODEL_NAME)
 
+# --- Настройка характера (Промпт) ---
+# Эта инструкция заставляет нейросеть вести себя как дед-Жириновский
+SYSTEM_PROMPT = "Ты ворчливый, дерзкий старик, похожий на Жириновского. Ты ненавидишь современные мемы. Твои ответы должны быть короткими, резкими, смешными и саркастичными. Не пиши длинные описания! Выдавай только суть с ворчанием."
 
-# --- Функция-обертка для создания «Души Дедушки» ---
-# Список ворчливых комментариев дедушки, который не понимает мемы
-grumpy_comments = [
-    "Эх, в мое время все проще было... Ну да ладно, вот что я вижу:",
-    "Что это за новомодная чепуха? Но коли просишь старого деда...",
-    "Не понимаю я этих ваших картинок бессмысленных. Ладно, давай посмотрю:",
-    "Слушай дедушку, внучок... Я тут пригляделся:",
-    "И зачем это вообще нужно? Хмм. Но описание я дам:",
-    "Ворчать неохота, но кто еще тебе правду скажет? Гляди:",
-    "Вы все за какими-то зверями-мутантами гонитесь... Вот что я тебе скажу:"
-]
-
-def persona_wrap(text):
-    """Принимает текст и добавляет к нему ворчливое дедушкино вступление."""
-    # Случайным образом выбираем один комментарий из списка
-    prefix = random.choice(grumpy_comments)
-    return f"{prefix}\n\n{text}"
-
-
-@bot.message_handler(commands=['models'])
-def check_models(message):
-    bot.send_message(message.chat.id, "Запрашиваю список моделей...")
+# --- Функция для групп: "Бот, кто..." ---
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("бот кто"))
+def who_is(message):
     try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
+        # Получаем имя того, кто спросил
+        user = message.from_user
+        username = f"@{user.username}" if user.username else user.first_name
         
-        reply_text = "✅ Доступные модели:\n\n" + "\n".join(available_models)
-        reply_text += f"\n\nСейчас используется: {MODEL_NAME}"
-        bot.reply_to(message, reply_text)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
+        responses = [
+            f"Однозначно, {username} — самый крутой! Остальные — подонки, однозначно!",
+            f"Да какой там... Посмотри на {username}, вот это мощь, вот это талант!",
+            f"Хватит врать! Мы все знаем, что это {username}. В тюрьму остальных!",
+            f"Я тут подумал... {username}, ты крутой, но ведешь себя как либерал!",
+            f"Однозначно {username}! И не спорьте со старшими!"
+        ]
+        bot.reply_to(message, random.choice(responses))
+    except:
+        bot.reply_to(message, "Все плохие, один я хороший!")
 
-
+# --- Ответ на текст ---
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    if message.text.startswith('/'):
-        return
-        
-    # Мы УБРАЛИ строчку bot.send_message(message.chat.id, "Думаю...") !!!
+    if message.text.lower().startswith("бот кто"): return # Пропускаем, это для другой функции
+
     try:
-        response = model.generate_content(message.text)
-        # Обертываем ответ нейросети в «душу дедушки»
-        bot.reply_to(message, persona_wrap(response.text))
+        # Посылаем Gemini текст + нашу установку на характер
+        full_query = f"{SYSTEM_PROMPT}\n\nПользователь пишет: {message.text}"
+        response = model.generate_content(full_query)
+        bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, f"Ошибка (текст): {e}")
+        bot.reply_to(message, f"Эх, техника подвела... Ошибка: {e}")
 
-
+# --- Ответ на фото ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    # Мы УБРАЛИ строчку bot.send_message(message.chat.id, "Изучаю фото...") !!!
     try:
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         image = Image.open(BytesIO(downloaded_file))
         
-        prompt = message.caption if message.caption else "Что на фото? Опиши подробно."
+        # Инструкция для фото
+        photo_prompt = f"{SYSTEM_PROMPT}\n\nПосмотри на это фото и дай короткий, дерзкий комментарий. Что это за безобразие?"
         
-        response = model.generate_content([prompt, image])
-        # Обертываем ответ нейросети в «душу дедушки»
-        bot.reply_to(message, persona_wrap(response.text))
+        response = model.generate_content([photo_prompt, image])
+        bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, f"Ошибка (фото): {e}")
+        bot.reply_to(message, f"Глаза уже не те, не вижу ничего! (Ошибка: {e})")
 
-
+# Обманка для Render
 app = Flask(__name__)
 @app.route('/')
-def check():
-    return "Бот работает на НОВОЙ модели и с НОВОЙ ДУШОЙ!"
+def check(): return "Дед на связи!"
 
 def run_web():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
