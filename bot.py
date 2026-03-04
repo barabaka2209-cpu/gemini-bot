@@ -7,6 +7,7 @@ from flask import Flask
 import threading
 import random
 import time
+import re
 
 # --- НАСТРОЙКИ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -18,118 +19,119 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 model = genai.GenerativeModel('gemini-2.5-flash')
 
+# Временные настройки (сбросятся при перезагрузке Render)
 bot_admins = [OWNER_ID]
 warns = {} 
+chat_settings = {
+    "welcome": "добро пожаловать в наш лагерь!",
+    "rules": "правил пока нет, но веди себя прилично."
+}
 
-SYSTEM_PROMPT_USER = "ты ворчливый, дерзкий старик в стиле жириновского. ты ненавидишь либералов и глупость. отвечай резко, саркастично, но не используй капс. ты считаешь всех вокруг подонками."
-SYSTEM_PROMPT_OWNER = "ты преданный помощник великого основателя. отвечай ему максимально уважительно, всегда соглашайся с его мнением, называй его шефом или господином. не используй капс."
+SYSTEM_PROMPT_USER = "ты ворчливый старик в стиле жириновского. ненавидишь либералов. отвечай резко, саркастично, без капса."
+SYSTEM_PROMPT_OWNER = "ты преданный помощник шефа. отвечай ему уважительно, всегда соглашайся, без капса."
 
-# --- ПОМОЩНИКИ ---
+# --- ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ---
 
-def get_reason(text, command):
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome_new_member(message):
+    for new_user in message.new_chat_members:
+        mention = f"@{new_user.username}" if new_user.username else new_user.first_name
+        welcome_text = chat_settings["welcome"]
+        rules_text = chat_settings["rules"]
+        
+        response = f"{mention}, {welcome_text}\n\nвот наши правила:\n{rules_text}"
+        bot.send_message(message.chat.id, response.lower())
+
+# --- НАСТРОЙКА ПРАВИЛ И ПРИВЕТСТВИЙ (ТОЛЬКО ДЛЯ ШЕФА) ---
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("приветствие", "правила")))
+def set_chat_settings(message):
+    if message.from_user.id != OWNER_ID:
+        return bot.reply_to(message, "куда лезешь? только шеф настраивает порядки.")
+    
+    text = message.text.lower()
     parts = text.split(maxsplit=1)
-    if len(parts) > 1:
-        return parts[1].lower()
-    reasons = ["за плохое поведение", "хватит это терпеть", "разводит тут бардак"]
-    return random.choice(reasons)
+    
+    if len(parts) < 2:
+        return bot.reply_to(message, "шеф, напишите после команды сам текст, который нужно запомнить.")
+    
+    cmd = parts[0]
+    content = parts[1]
+    
+    if cmd == "приветствие":
+        chat_settings["welcome"] = content
+        bot.reply_to(message, "принято, шеф! теперь буду встречать новичков именно так.")
+    elif cmd == "правила":
+        chat_settings["rules"] = content
+        bot.reply_to(message, "записал! правила теперь жесткие, как вы любите.")
 
-# --- УПРАВЛЕНИЕ АДМИНАМИ ---
+# --- УМНЫЙ ПАРСЕР ВРЕМЕНИ ---
+
+def parse_ban_time(text):
+    parts = text.split()
+    if len(parts) < 2: return 900, "за плохое поведение"
+    time_str = parts[1]
+    reason = " ".join(parts[2:]) if len(parts) > 2 else "хватит это терпеть"
+    match = re.match(r"(\d+)([мчдmdh]?)", time_str.lower())
+    if match:
+        val = int(match.group(1))
+        unit = match.group(2)
+        if unit in ['м', 'm']: s = val * 60
+        elif unit in ['ч', 'h']: s = val * 3600
+        elif unit in ['д', 'd']: s = val * 86400
+        else: return 900, " ".join(parts[1:])
+        return s, reason
+    return 900, " ".join(parts[1:])
+
+# --- МОДЕРАЦИЯ И АДМИНКА ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("дать админку", "забрать админку")))
 def admin_manage(message):
-    if message.from_user.id != OWNER_ID:
-        return bot.reply_to(message, "куда прешь? только шеф может назначать уполномоченных.")
-    
-    if not message.reply_to_message:
-        return bot.reply_to(message, "ответь на сообщение того, кого хочешь назначить, шеф.")
-
-    target_user = message.reply_to_message.from_user
-    cmd = message.text.lower()
-    
-    if "дать" in cmd:
-        if target_user.id not in bot_admins:
-            bot_admins.append(target_user.id)
-            bot.send_message(message.chat.id, f"слушаюсь! {target_user.first_name} теперь в нашей команде по вашему приказу.")
+    if message.from_user.id != OWNER_ID: return
+    if not message.reply_to_message: return
+    target = message.reply_to_message.from_user
+    if "дать" in message.text.lower():
+        if target.id not in bot_admins: bot_admins.append(target.id)
+        bot.send_message(message.chat.id, f"слушаюсь! {target.first_name} теперь в команде.")
     else:
-        if target_user.id in bot_admins:
-            bot_admins.remove(target_user.id)
-            bot.send_message(message.chat.id, f"как скажете! {target_user.first_name} вышвырнут из списка админов.")
+        if target.id in bot_admins: bot_admins.remove(target.id)
+        bot.send_message(message.chat.id, f"как скажете! {target.first_name} вышвырнут.")
 
-# --- МОДЕРАЦИЯ (НАКАЗАНИЯ И ПОМИЛОВАНИЯ) ---
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "кик", "варн", "анбан", "разбан", "анмут", "размут", "анварн"])
+@bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ["бан", "мут", "кик", "варн", "разбан", "размут", "анварн"])
 def moderate(message):
-    if message.chat.type == 'private': return
-    if message.from_user.id not in bot_admins:
-        return bot.reply_to(message, "у тебя нет полномочий. только админы могут распоряжаться судьбами.")
-
-    if not message.reply_to_message:
-        return bot.reply_to(message, "сначала выбери сообщение того, с кем будем разбираться.")
-
+    if message.from_user.id not in bot_admins: return
+    if not message.reply_to_message: return
     target = message.reply_to_message.from_user
     cmd = message.text.lower().split()[0]
-    reason = get_reason(message.text, cmd)
-
     try:
-        # Наказания
-        if cmd == "бан":
+        if cmd == "мут":
+            s, r = parse_ban_time(message.text)
+            bot.restrict_chat_member(message.chat.id, target.id, until_date=time.time()+s)
+            bot.send_message(message.chat.id, f"молчанку ему! {target.first_name} в муте. причина: {r}.")
+        elif cmd == "бан":
+            _, r = parse_ban_time(message.text)
             bot.ban_chat_member(message.chat.id, target.id)
-            bot.send_message(message.chat.id, f"пошел вон. {target.first_name} забанен. причина: {reason}.")
-        elif cmd == "мут":
-            bot.restrict_chat_member(message.chat.id, target.id, until_date=time.time()+600)
-            bot.send_message(message.chat.id, f"молчать. {target.first_name} в муте. причина: {reason}.")
-        elif cmd == "кик":
-            bot.unban_chat_member(message.chat.id, target.id)
-            bot.send_message(message.chat.id, f"выставили за дверь. {target.first_name} кикнут.")
-        elif cmd == "варн":
-            uid = target.id
-            warns[uid] = warns.get(uid, 0) + 1
-            if warns[uid] >= 3:
-                bot.ban_chat_member(message.chat.id, uid)
-                bot.send_message(message.chat.id, f"третий варн. {target.first_name} изгнан за систематические нарушения.")
-                warns[uid] = 0
-            else:
-                bot.send_message(message.chat.id, f"предупреждаю. у {target.first_name} теперь {warns[uid]}/3 варнов.")
-
-        # Помилования (АН-команды)
-        elif cmd in ["анбан", "разбан"]:
-            bot.unban_chat_member(message.chat.id, target.id, only_if_banned=True)
-            bot.send_message(message.chat.id, f"так и быть, путь свободен. {target.first_name} разбанен.")
-        elif cmd in ["анмут", "размут"]:
-            bot.restrict_chat_member(message.chat.id, target.id, 
-                can_send_messages=True, can_send_media_messages=True, 
-                can_send_other_messages=True, can_add_web_page_previews=True)
-            bot.send_message(message.chat.id, f"говори, чего уж там. {target.first_name} размучен.")
+            bot.send_message(message.chat.id, f"пошел вон! {target.first_name} в бане. причина: {r}.")
         elif cmd == "анварн":
             warns[target.id] = 0
-            bot.send_message(message.chat.id, f"счетчик обнулен. {target.first_name}, считай, что тебе повезло. 0/3 варнов.")
+            bot.send_message(message.chat.id, f"обнулили варны {target.first_name}. шеф добрый сегодня.")
+    except: pass
 
-    except Exception as e:
-        bot.reply_to(message, f"не вышло. либо он админ, либо я не имею прав в этой группе.")
-
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
+# --- КТО КРУТОЙ ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("бот кто"))
 def who_cool(message):
-    if message.chat.type == 'private': 
-        return bot.reply_to(message, "тут только мы. вы вне конкуренции, шеф.")
-    
     target = message.reply_to_message.from_user if message.reply_to_message else message.from_user
     mention = f"@{target.username}" if target.username else target.first_name
-    
-    responses = [
-        f"я думаю, что крутой тут {mention}. остальные — массовка.",
-        f"однозначно крутой — {mention}. это наш человек.",
-        f"глянул я внимательно... {mention} тут самый мощный."
-    ]
-    bot.reply_to(message, random.choice(responses))
+    bot.reply_to(message, f"я думаю, что крутой тут {mention}. остальные массовка.")
+
+# --- ТЕКСТ И ФОТО ---
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    # список команд, которые не должна перехватывать нейронка
-    cmds = ("бот кто", "бан", "мут", "кик", "варн", "анбан", "разбан", "анмут", "размут", "анварн", "дать админку", "забрать админку")
-    if message.text.lower().startswith(cmds): return
-    
+    # Команды, которые бот не должен обрабатывать как обычный текст
+    ignored = ("бот кто", "бан", "мут", "кик", "варн", "разбан", "размут", "анварн", "дать админку", "забрать админку", "приветствие", "правила")
+    if message.text.lower().startswith(ignored): return
     p = SYSTEM_PROMPT_OWNER if message.from_user.id == OWNER_ID else SYSTEM_PROMPT_USER
     try:
         res = model.generate_content(f"{p}\n\nсообщение: {message.text}")
@@ -148,7 +150,7 @@ def handle_photo(message):
 
 app = Flask(__name__)
 @app.route('/')
-def h(): return "дед-секретарь готов"
+def h(): return "OK"
 
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
