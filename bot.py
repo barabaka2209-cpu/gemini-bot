@@ -55,12 +55,12 @@ def handle_all(message):
             res = model.generate_content([f"{p}\n\nпрокомментируй фото:", img])
         bot.reply_to(message, res.text.lower())
     except Exception as e:
-        print(f"ОШИБКА НЕЙРОНКИ: {e}")
+        # ТЕПЕРЬ ОН НЕ БУДЕТ МОЛЧАТЬ!
+        bot.reply_to(message, f"Шеф, нейронка отвалилась! Ошибка: {str(e)}")
 
-# --- WEBHOOK (БРОНЯ ОТ ОШИБОК 409) ---
+# --- WEBHOOK (БРОНЯ ОТ ОШИБОК) ---
 app = Flask(__name__)
 
-# Сюда Телеграм будет сам присылать сообщения
 @app.route('/' + TOKEN, methods=['POST'])
 def getMessage():
     json_string = request.get_data().decode('utf-8')
@@ -68,20 +68,16 @@ def getMessage():
     bot.process_new_updates([update])
     return "!", 200
 
-# Главная страница для проверки работы сервера
 @app.route('/')
 def webhook():
-    return "Дед жив и работает через Webhook!", 200
+    return "Дед жив!", 200
 
 if __name__ == "__main__":
-    # Render сам выдает адрес сайта (например: my-bot.onrender.com)
     host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
     if host:
-        bot.remove_webhook()
-        time.sleep(1)
-        # Говорим Телеграму отправлять сообщения на наш сайт
-        bot.set_webhook(url=f"https://{host}/{TOKEN}")
-        print(f"ШЕФ, ВЕБХУК УСТАНОВЛЕН НА: https://{host}")
-    
-    # Запускаем сервер
+        try:
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.set_webhook(url=f"https://{host}/{TOKEN}")
+        except: pass
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
