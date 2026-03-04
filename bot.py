@@ -3,18 +3,16 @@ import google.generativeai as genai
 import os
 from io import BytesIO
 from PIL import Image
-from flask import Flask
-import threading
+from flask import Flask, request
 import time
 
-# --- КОНФИГ ---
+# --- НАСТРОЙКИ ---
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 AI_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=AI_KEY)
-# Используем flash-модель для быстроты
-model = genai.GenerativeModel('gemini-1.5-flash') 
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 OWNER_ID = 8067227894 
 chat_settings = {"welcome": "привет! теперь ты мой раб.", "rules": "1. слушать шефа. 2. не ныть."}
@@ -22,7 +20,7 @@ chat_settings = {"welcome": "привет! теперь ты мой раб.", "r
 # --- ОБРАБОТЧИКИ ---
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "дед на связи. пиши, не стесняйся.")
+    bot.reply_to(message, "дед на связи. готов служить, шеф!")
 
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_user(message):
@@ -57,25 +55,33 @@ def handle_all(message):
             res = model.generate_content([f"{p}\n\nпрокомментируй фото:", img])
         bot.reply_to(message, res.text.lower())
     except Exception as e:
-        print(f"ОШИБКА: {e}")
+        print(f"ОШИБКА НЕЙРОНКИ: {e}")
 
-# --- ЗАПУСК ---
+# --- WEBHOOK (БРОНЯ ОТ ОШИБОК 409) ---
 app = Flask(__name__)
-@app.route('/')
-def h(): return "OK"
 
-def run_bot():
-    # ЖЕСТКАЯ ОЧИСТКА ПЕРЕД СТАРТОМ
-    while True:
-        try:
-            bot.delete_webhook(drop_pending_updates=True)
-            time.sleep(5) # Большая пауза, чтобы убить конкурентов
-            print("Слушаю эфир...")
-            bot.polling(none_stop=True, interval=1, timeout=20)
-        except Exception as e:
-            print(f"Конфликт или ошибка: {e}. Пробую снова через 10 сек...")
-            time.sleep(10)
+# Сюда Телеграм будет сам присылать сообщения
+@app.route('/' + TOKEN, methods=['POST'])
+def getMessage():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "!", 200
+
+# Главная страница для проверки работы сервера
+@app.route('/')
+def webhook():
+    return "Дед жив и работает через Webhook!", 200
 
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))), daemon=True).start()
-    run_bot()
+    # Render сам выдает адрес сайта (например: my-bot.onrender.com)
+    host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    if host:
+        bot.remove_webhook()
+        time.sleep(1)
+        # Говорим Телеграму отправлять сообщения на наш сайт
+        bot.set_webhook(url=f"https://{host}/{TOKEN}")
+        print(f"ШЕФ, ВЕБХУК УСТАНОВЛЕН НА: https://{host}")
+    
+    # Запускаем сервер
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
