@@ -11,16 +11,12 @@ import time
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = 8067227894 
 
-# === ТВОЯ ТЕСТОВАЯ КАРТИНКА (прямая ссылка) ===
-TEST_IMAGE = "https://i.postimg.cc/zV0Lqc8k/image.jpg"
-
-# === СПИСОК КАРТИНОК ДЛЯ РАНДОМА (Пока тут только одна, потом добавишь ID) ===
+# === ТВОИ КАРТИНКИ (Вставляй ID или прямые ссылки) ===
 PETER_IMAGES = [
-    TEST_IMAGE
+    "https://i.postimg.cc/zV0Lqc8k/image.jpg" 
 ]
 
-# Шанс рандомной отправки картинки (15%)
-IMAGE_CHANCE = 15 
+IMAGE_CHANCE = 10 # Шанс рандомной картинки без подписи
 
 def collect_keys():
     found_keys = []
@@ -51,9 +47,30 @@ def ask_gemini(prompt_parts):
             continue
     return "шеф, все ключи пусты."
 
+# ПРОВЕРКА НА АДМИНА
+def is_admin(chat_id, user_id):
+    if user_id == OWNER_ID: return True
+    if chat_id > 0: return True # В личке человек всегда админ
+    try:
+        admins = bot.get_chat_administrators(chat_id)
+        for admin in admins:
+            if admin.user.id == user_id:
+                return True
+    except: pass
+    return False
+
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, f"хехехе, питер гриффин на связи. ключей: {len(API_KEYS)}.")
+
+# === ПРИВЕТСТВИЕ НОВИЧКОВ ===
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome_new_member(message):
+    for new_user in message.new_chat_members:
+        if new_user.id == bot.get_me().id:
+            bot.send_message(message.chat.id, "о, здорово. я теперь тут главный. несите пиво.")
+        else:
+            bot.reply_to(message, f"о, еще один лузер приперся. здорово, {new_user.first_name.lower()}. читай правила и не беси меня, а то выкину.")
 
 @bot.message_handler(content_types=['text', 'photo'])
 def handle_all(message):
@@ -74,39 +91,78 @@ def handle_all(message):
         # === ОБРАБОТКА ТЕКСТА ===
         if message.content_type == 'text':
             text_lower = message.text.lower()
-            if text_lower.startswith(("/", "бан", "мут")): return
+            cmd = text_lower.split()[0] if text_lower else ""
 
-            # 🛑 ПРОВЕРКА НА КОДОВОЕ СЛОВО "КАРТИНКА" 🛑
-            if text_lower == "картинка":
-                bot.send_photo(
-                    message.chat.id, 
-                    TEST_IMAGE, 
-                    caption="хехехе, вот твоя тестовая картинка!", 
-                    reply_to_message_id=message.message_id
+            # 🛑 1. ПРАВИЛА ЧАТА 🛑
+            if text_lower in ["правила", "/rules"]:
+                rules_text = (
+                    "мои правила простые:\n"
+                    "1. я тут главный, а мой создатель — бог.\n"
+                    "2. не спамить и не ныть, а то забаню к чертям.\n"
+                    "3. каждый обязан скинуться мне на пиво «потакет».\n"
+                    "всё понял? свободен."
                 )
-                return # Выходим, чтобы не дергать нейросеть
+                bot.reply_to(message, rules_text)
+                return
 
-            # Если не кодовое слово - отвечает нейросеть
+            # 🛑 2. ФУНКЦИИ МОДЕРАЦИИ (РАБОТАЮТ ТОЛЬКО ОТВЕТОМ НА СООБЩЕНИЕ) 🛑
+            if message.reply_to_message and cmd in ["бан", "мут", "кик", "разбан", "анмут", "анбан"]:
+                if not is_admin(message.chat.id, message.from_user.id):
+                    bot.reply_to(message, "заткнись, у тебя нет прав мне указывать. иди лоис поуказывай.")
+                    return
+                
+                target_user_id = message.reply_to_message.from_user.id
+                target_name = message.reply_to_message.from_user.first_name.lower()
+
+                try:
+                    if cmd == "бан":
+                        bot.ban_chat_member(message.chat.id, target_user_id)
+                        bot.reply_to(message, f"хехехе, выкинул этого лузера ({target_name}) на мороз. больше он тут не появится.")
+                    
+                    elif cmd == "кик":
+                        # Кик = бан + сразу разбан (человек может зайти по ссылке снова)
+                        bot.ban_chat_member(message.chat.id, target_user_id)
+                        bot.unban_chat_member(message.chat.id, target_user_id)
+                        bot.reply_to(message, f"пнул под зад {target_name}. пусть заходит заново, если поумнеет.")
+                    
+                    elif cmd == "мут":
+                        # Мут на 1 час (3600 секунд) по умолчанию
+                        bot.restrict_chat_member(message.chat.id, target_user_id, until_date=int(time.time() + 3600))
+                        bot.reply_to(message, f"заклеил рот скотчем ({target_name}) на час. пусть посидит в тишине, а то разнылся тут.")
+                    
+                    elif cmd in ["разбан", "анбан"]:
+                        bot.unban_chat_member(message.chat.id, target_user_id, only_if_banned=True)
+                        bot.reply_to(message, f"ладно, пусть возвращается. я сегодня добрый.")
+                    
+                    elif cmd == "анмут":
+                        bot.restrict_chat_member(message.chat.id, target_user_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
+                        bot.reply_to(message, f"оторвал скотч с лица ({target_name}). говори, но не беси меня.")
+                except Exception as e:
+                    bot.reply_to(message, "че-то не вышло. эй, ты забыл дать мне админку в чате! я тебе что, маг?")
+                return # Выходим, чтобы не отправлять это в нейросеть
+
+            # Тестовая команда картинки
+            if text_lower == "картинка":
+                if PETER_IMAGES: bot.send_photo(message.chat.id, PETER_IMAGES[0])
+                return
+
+            # 🤖 3. ОТВЕТ ОТ НЕЙРОСЕТИ 🤖
             ans = ask_gemini(f"{p}\n\nсообщение: {message.text}")
             final_text = ans.lower() if ans else "пустой ответ"
+            bot.reply_to(message, final_text)
 
-            # Рандомайзер картинок (шанс IMAGE_CHANCE)
-            is_random_image_time = random.randint(1, 100) <= IMAGE_CHANCE
-            if is_random_image_time and message.chat.type != "private":
-                random_img_url = random.choice(PETER_IMAGES)
-                bot.send_photo(message.chat.id, random_img_url, caption=final_text[:1024], reply_to_message_id=message.message_id)
-            else:
-                bot.reply_to(message, final_text)
+            # 📸 4. РАНДОМНАЯ КАРТИНКА БЕЗ ПОДПИСИ 📸
+            if message.chat.type != "private" and len(PETER_IMAGES) > 0:
+                if random.randint(1, 100) <= IMAGE_CHANCE:
+                    bot.send_photo(message.chat.id, random.choice(PETER_IMAGES)) 
 
-        # === ОБРАБОТКА ФОТО ===
+        # === ОБРАБОТКА ФОТО (ДЛЯ ДОБАВЛЕНИЯ НОВЫХ В КОД) ===
         elif message.content_type == 'photo':
-            file_id = message.photo[-1].file_id # Получаем ID картинки
+            file_id = message.photo[-1].file_id 
             
-            # 🛠 ЕСЛИ ТЫ (ХОЗЯИН) КИНУЛ ФОТО - БОТ ВЫДАСТ ЕГО ID 🛠
             if message.from_user.id == OWNER_ID:
                 bot.reply_to(message, f"Код этой картинки для списка (скопируй):\n`{file_id}`", parse_mode="Markdown")
 
-            # Скачиваем фото и отправляем нейросети
             file_info = bot.get_file(file_id)
             img = Image.open(BytesIO(bot.download_file(file_info.file_path)))
             ans = ask_gemini([f"{p}\n\nпрокомментируй фото:", img])
