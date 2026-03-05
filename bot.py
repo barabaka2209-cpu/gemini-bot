@@ -11,12 +11,12 @@ import time
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = 8067227894 
 
-# === ТВОИ КАРТИНКИ (Вставляй ID или прямые ссылки) ===
+# === ТВОИ КАРТИНКИ ===
 PETER_IMAGES = [
     "https://i.postimg.cc/zV0Lqc8k/image.jpg" 
 ]
 
-IMAGE_CHANCE = 10 # Шанс рандомной картинки без подписи
+IMAGE_CHANCE = 10 
 
 def collect_keys():
     found_keys = []
@@ -47,10 +47,9 @@ def ask_gemini(prompt_parts):
             continue
     return "шеф, все ключи пусты."
 
-# ПРОВЕРКА НА АДМИНА
 def is_admin(chat_id, user_id):
     if user_id == OWNER_ID: return True
-    if chat_id > 0: return True # В личке человек всегда админ
+    if chat_id > 0: return True 
     try:
         admins = bot.get_chat_administrators(chat_id)
         for admin in admins:
@@ -63,7 +62,6 @@ def is_admin(chat_id, user_id):
 def start(message):
     bot.reply_to(message, f"хехехе, питер гриффин на связи. ключей: {len(API_KEYS)}.")
 
-# === ПРИВЕТСТВИЕ НОВИЧКОВ ===
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_new_member(message):
     for new_user in message.new_chat_members:
@@ -74,7 +72,6 @@ def welcome_new_member(message):
 
 @bot.message_handler(content_types=['text', 'photo'])
 def handle_all(message):
-    # === РОЛИ ===
     if message.chat.type == "private":
         p = "ты вежливый ии-помощник. отвечай кратко и строго строчными буквами."
     elif message.from_user.id == OWNER_ID:
@@ -88,13 +85,13 @@ def handle_all(message):
         )
 
     try:
-        # === ОБРАБОТКА ТЕКСТА ===
         if message.content_type == 'text':
             text_lower = message.text.lower()
-            cmd = text_lower.split()[0] if text_lower else ""
+            parts = text_lower.split()
+            cmd = parts[0] if parts else ""
 
-            # 🛑 1. ПРАВИЛА ЧАТА 🛑
-            if text_lower in ["правила", "/rules"]:
+            # ПРАВИЛА
+            if cmd in ["правила", "/rules"]:
                 rules_text = (
                     "мои правила простые:\n"
                     "1. я тут главный, а мой создатель — бог.\n"
@@ -105,7 +102,7 @@ def handle_all(message):
                 bot.reply_to(message, rules_text)
                 return
 
-            # 🛑 2. ФУНКЦИИ МОДЕРАЦИИ (РАБОТАЮТ ТОЛЬКО ОТВЕТОМ НА СООБЩЕНИЕ) 🛑
+            # МОДЕРАЦИЯ
             if message.reply_to_message and cmd in ["бан", "мут", "кик", "разбан", "анмут", "анбан"]:
                 if not is_admin(message.chat.id, message.from_user.id):
                     bot.reply_to(message, "заткнись, у тебя нет прав мне указывать. иди лоис поуказывай.")
@@ -120,15 +117,34 @@ def handle_all(message):
                         bot.reply_to(message, f"хехехе, выкинул этого лузера ({target_name}) на мороз. больше он тут не появится.")
                     
                     elif cmd == "кик":
-                        # Кик = бан + сразу разбан (человек может зайти по ссылке снова)
                         bot.ban_chat_member(message.chat.id, target_user_id)
                         bot.unban_chat_member(message.chat.id, target_user_id)
                         bot.reply_to(message, f"пнул под зад {target_name}. пусть заходит заново, если поумнеет.")
                     
                     elif cmd == "мут":
-                        # Мут на 1 час (3600 секунд) по умолчанию
-                        bot.restrict_chat_member(message.chat.id, target_user_id, until_date=int(time.time() + 3600))
-                        bot.reply_to(message, f"заклеил рот скотчем ({target_name}) на час. пусть посидит в тишине, а то разнылся тут.")
+                        # --- УМНЫЙ МУТ С РАСЧЕТОМ ВРЕМЕНИ ---
+                        duration_seconds = 3600 # 1 час по умолчанию
+                        time_text = "на час"
+
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            amount = int(parts[1])
+                            unit = parts[2] if len(parts) > 2 else "мин"
+
+                            if any(unit.startswith(x) for x in ["мин", "м"]):
+                                duration_seconds = amount * 60
+                                time_text = f"на {amount} минут"
+                            elif any(unit.startswith(x) for x in ["час", "ч"]):
+                                duration_seconds = amount * 3600
+                                time_text = f"на {amount} часов"
+                            elif any(unit.startswith(x) for x in ["дн", "ден", "сут", "д"]):
+                                duration_seconds = amount * 86400
+                                time_text = f"на {amount} дней"
+                            else:
+                                duration_seconds = amount * 60
+                                time_text = f"на {amount} минут"
+
+                        bot.restrict_chat_member(message.chat.id, target_user_id, until_date=int(time.time() + duration_seconds))
+                        bot.reply_to(message, f"заклеил рот скотчем ({target_name}) {time_text}. пусть посидит в тишине, а то разнылся тут.")
                     
                     elif cmd in ["разбан", "анбан"]:
                         bot.unban_chat_member(message.chat.id, target_user_id, only_if_banned=True)
@@ -139,24 +155,23 @@ def handle_all(message):
                         bot.reply_to(message, f"оторвал скотч с лица ({target_name}). говори, но не беси меня.")
                 except Exception as e:
                     bot.reply_to(message, "че-то не вышло. эй, ты забыл дать мне админку в чате! я тебе что, маг?")
-                return # Выходим, чтобы не отправлять это в нейросеть
+                return
 
-            # Тестовая команда картинки
             if text_lower == "картинка":
                 if PETER_IMAGES: bot.send_photo(message.chat.id, PETER_IMAGES[0])
                 return
 
-            # 🤖 3. ОТВЕТ ОТ НЕЙРОСЕТИ 🤖
+            # ОТВЕТ НЕЙРОСЕТИ
             ans = ask_gemini(f"{p}\n\nсообщение: {message.text}")
             final_text = ans.lower() if ans else "пустой ответ"
             bot.reply_to(message, final_text)
 
-            # 📸 4. РАНДОМНАЯ КАРТИНКА БЕЗ ПОДПИСИ 📸
+            # РАНДОМНАЯ КАРТИНКА БЕЗ ПОДПИСИ
             if message.chat.type != "private" and len(PETER_IMAGES) > 0:
                 if random.randint(1, 100) <= IMAGE_CHANCE:
                     bot.send_photo(message.chat.id, random.choice(PETER_IMAGES)) 
 
-        # === ОБРАБОТКА ФОТО (ДЛЯ ДОБАВЛЕНИЯ НОВЫХ В КОД) ===
+        # ОБРАБОТКА ФОТО ДЛЯ ID
         elif message.content_type == 'photo':
             file_id = message.photo[-1].file_id 
             
