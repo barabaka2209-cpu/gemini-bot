@@ -2,197 +2,111 @@ import telebot
 import os
 import random
 import time
+import threading
 from flask import Flask, request
-from g4f.client import Client # Импортируем бесплатную нейросеть без лимитов
+from groq import Groq
 
+# Конфиг из переменных окружения
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_KEY = os.environ.get("GROQ_API_KEY")
 OWNER_ID = 8067227894 
 
-# === ТВОИ КАРТИНКИ ===
-PETER_IMAGES = [
-    "https://i.postimg.cc/zV0Lqc8k/image.jpg" 
-]
+bot = telebot.TeleBot(TOKEN)
+client = Groq(api_key=GROQ_KEY)
+app = Flask(__name__)
 
+PETER_IMAGES = ["https://i.postimg.cc/zV0Lqc8k/image.jpg"]
 IMAGE_CHANCE = 10 
 
-bot = telebot.TeleBot(TOKEN)
-ai_client = Client() # Инициализируем клиента G4F
-
-def ask_ai(prompt_text, image_bytes=None):
-    """Функция для общения с бесплатной нейросетью"""
+def ask_ai(prompt_text, system_prompt):
+    """Запрос к Llama 3 через Groq (официально и быстро)"""
     try:
-        if image_bytes:
-            # Если есть картинка, передаем ее. G4F сам подберет провайдера с поддержкой Vision
-            response = ai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt_text}],
-                image=image_bytes
-            )
-        else:
-            # Для обычного текста
-            response = ai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt_text}],
-            )
-        return response.choices[0].message.content
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt_text}
+            ],
+            temperature=0.8,
+            max_tokens=500
+        )
+        return completion.choices[0].message.content
     except Exception as e:
-        print(f"Ошибка нейросети: {e}")
-        return "мои мозги сейчас в отключке. иди за пивом и спроси позже."
+        print(f"Ошибка ИИ: {e}")
+        return "мои мозги сейчас в отключке. это даже хуже, чем тот раз, когда я пытался переспорить гигантского цыпленка."
 
 def is_admin(chat_id, user_id):
-    if user_id == OWNER_ID: return True
-    if chat_id > 0: return True 
+    if user_id == OWNER_ID or chat_id > 0: return True
     try:
         admins = bot.get_chat_administrators(chat_id)
-        for admin in admins:
-            if admin.user.id == user_id:
-                return True
-    except: pass
-    return False
+        return any(admin.user.id == user_id for admin in admins)
+    except: return False
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "хехехе, питер гриффин на связи. я теперь работаю без лимитов, лузеры.")
-
-@bot.message_handler(content_types=['new_chat_members'])
-def welcome_new_member(message):
-    for new_user in message.new_chat_members:
-        if new_user.id == bot.get_me().id:
-            bot.send_message(message.chat.id, "о, здорово. я теперь тут главный. несите пиво.")
-        else:
-            bot.reply_to(message, f"о, еще один лузер приперся. здорово, {new_user.first_name.lower()}. читай правила и не беси меня, а то выкину.")
-
-@bot.message_handler(content_types=['text', 'photo'])
-def handle_all(message):
-    if message.chat.type == "private":
-        p = "ты вежливый ии-помощник. отвечай кратко и строго строчными буквами."
-    elif message.from_user.id == OWNER_ID:
-        p = "ты преданный слуга своего господина. называй его господином, будь почтителен. пиши строго строчными буквами."
-    else:
-        p = (
-            "ты питер гриффин из гриффинов. ты ворчливый, ленивый и глуповатый. "
-            "постоянно шути над собеседником, насмехайся над ним. "
-            "используй абсурдные вставки в стиле 'это даже хуже, чем тот раз, когда я...'. "
-            "отвечай едко, без уважения и СТРОГО строчными буквами."
-        )
-
+def process_logic(message):
+    """Основная логика в отдельном потоке"""
     try:
-        if message.content_type == 'text':
-            text_lower = message.text.lower()
-            parts = text_lower.split()
-            cmd = parts[0] if parts else ""
+        # Настройка промпта
+        if message.chat.type == "private":
+            p = "ты вежливый ии-помощник. отвечай кратко и строго строчными буквами."
+        elif message.from_user.id == OWNER_ID:
+            p = "ты преданный слуга своего господина. называй его господином, будь почтителен. пиши строго строчными буквами."
+        else:
+            p = ("ты питер гриффин. ты ворчливый, ленивый и глуповатый. "
+                 "постоянно шути, используй 'это даже хуже, чем тот раз, когда я...'. "
+                 "отвечай едко и СТРОГО строчными буквами.")
 
-            # ПРАВИЛА
-            if cmd in ["правила", "/rules"]:
-                rules_text = (
-                    "мои правила простые:\n"
-                    "1. я тут главный, а мой создатель — бог.\n"
-                    "2. не спамить и не ныть, а то забаню к чертям.\n"
-                    "3. каждый обязан скинуться мне на пиво «потакет».\n"
-                    "всё понял? свободен."
-                )
-                bot.reply_to(message, rules_text)
+        text_lower = message.text.lower()
+        parts = text_lower.split()
+        cmd = parts[0] if parts else ""
+
+        # Команда Правила
+        if cmd in ["правила", "/rules"]:
+            bot.reply_to(message, "мои правила: я босс, ты нет. не спамить. не ныть. всё.")
+            return
+
+        # Модерация (бан, мут, кик)
+        if message.reply_to_message and cmd in ["бан", "мут", "кик", "разбан", "анмут"]:
+            if not is_admin(message.chat.id, message.from_user.id):
+                bot.reply_to(message, "заткнись, лузер. у тебя нет прав.")
                 return
-
-            # МОДЕРАЦИЯ
-            if message.reply_to_message and cmd in ["бан", "мут", "кик", "разбан", "анмут", "анбан"]:
-                if not is_admin(message.chat.id, message.from_user.id):
-                    bot.reply_to(message, "заткнись, у тебя нет прав мне указывать. иди лоис поуказывай.")
-                    return
+            
+            target_id = message.reply_to_message.from_user.id
+            try:
+                if cmd == "бан": bot.ban_chat_member(message.chat.id, target_id)
+                elif cmd == "кик": 
+                    bot.ban_chat_member(message.chat.id, target_id)
+                    bot.unban_chat_member(message.chat.id, target_id)
+                elif cmd == "мут": bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time() + 3600))
+                elif cmd == "анмут": bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
                 
-                target_user_id = message.reply_to_message.from_user.id
-                target_name = message.reply_to_message.from_user.first_name.lower()
+                bot.reply_to(message, f"хехехе, {cmd} выполнен успешно. я великолепен.")
+            except:
+                bot.reply_to(message, "дай мне админку сначала, гений.")
+            return
 
-                try:
-                    if cmd == "бан":
-                        bot.ban_chat_member(message.chat.id, target_user_id)
-                        bot.reply_to(message, f"хехехе, выкинул этого лузера ({target_name}) на мороз. больше он тут не появится.")
-                    
-                    elif cmd == "кик":
-                        bot.ban_chat_member(message.chat.id, target_user_id)
-                        bot.unban_chat_member(message.chat.id, target_user_id)
-                        bot.reply_to(message, f"пнул под зад {target_name}. пусть заходит заново, если поумнеет.")
-                    
-                    elif cmd == "мут":
-                        duration_seconds = 3600 
-                        time_text = "на час"
+        # Ответ ИИ
+        bot.send_chat_action(message.chat.id, 'typing')
+        ans = ask_ai(message.text, p)
+        bot.reply_to(message, ans.lower() if ans else "пусто")
 
-                        if len(parts) >= 2 and parts[1].isdigit():
-                            amount = int(parts[1])
-                            unit = parts[2] if len(parts) > 2 else "мин"
-
-                            if any(unit.startswith(x) for x in ["мин", "м"]):
-                                duration_seconds = amount * 60
-                                time_text = f"на {amount} минут"
-                            elif any(unit.startswith(x) for x in ["час", "ч"]):
-                                duration_seconds = amount * 3600
-                                time_text = f"на {amount} часов"
-                            elif any(unit.startswith(x) for x in ["дн", "ден", "сут", "д"]):
-                                duration_seconds = amount * 86400
-                                time_text = f"на {amount} дней"
-                            else:
-                                duration_seconds = amount * 60
-                                time_text = f"на {amount} минут"
-
-                        bot.restrict_chat_member(message.chat.id, target_user_id, until_date=int(time.time() + duration_seconds))
-                        bot.reply_to(message, f"заклеил рот скотчем ({target_name}) {time_text}. пусть посидит в тишине, а то разнылся тут.")
-                    
-                    elif cmd in ["разбан", "анбан"]:
-                        bot.unban_chat_member(message.chat.id, target_user_id, only_if_banned=True)
-                        bot.reply_to(message, f"ладно, пусть возвращается. я сегодня добрый.")
-                    
-                    elif cmd == "анмут":
-                        bot.restrict_chat_member(message.chat.id, target_user_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
-                        bot.reply_to(message, f"оторвал скотч с лица ({target_name}). говори, но не беси меня.")
-                except Exception as e:
-                    bot.reply_to(message, "че-то не вышло. эй, ты забыл дать мне админку в чате! я тебе что, маг?")
-                return
-
-            if text_lower == "картинка":
-                if PETER_IMAGES: bot.send_photo(message.chat.id, PETER_IMAGES[0])
-                return
-
-            # ОТВЕТ НЕЙРОСЕТИ
-            # Отправляем боту индикатор "печатает" (чтобы юзеры видели, что бот думает)
-            bot.send_chat_action(message.chat.id, 'typing')
-            
-            ans = ask_ai(f"{p}\n\nсообщение: {message.text}")
-            final_text = ans.lower() if ans else "пустой ответ"
-            bot.reply_to(message, final_text)
-
-            # РАНДОМНАЯ КАРТИНКА БЕЗ ПОДПИСИ
-            if message.chat.type != "private" and len(PETER_IMAGES) > 0:
-                if random.randint(1, 100) <= IMAGE_CHANCE:
-                    bot.send_photo(message.chat.id, random.choice(PETER_IMAGES)) 
-
-        # ОБРАБОТКА ФОТО ДЛЯ ID И НЕЙРОСЕТИ
-        elif message.content_type == 'photo':
-            file_id = message.photo[-1].file_id 
-            
-            if message.from_user.id == OWNER_ID:
-                bot.reply_to(message, f"Код этой картинки для списка (скопируй):\n`{file_id}`", parse_mode="Markdown")
-
-            bot.send_chat_action(message.chat.id, 'typing')
-            
-            # Скачиваем картинку в память
-            file_info = bot.get_file(file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            
-            # Передаем картинку в нейросеть
-            ans = ask_ai(f"{p}\n\nпрокомментируй фото:", image_bytes=downloaded_file)
-            bot.reply_to(message, ans.lower() if ans else "пустой ответ")
+        # Рандомная картинка
+        if message.chat.type != "private" and random.randint(1, 100) <= IMAGE_CHANCE:
+            bot.send_photo(message.chat.id, random.choice(PETER_IMAGES))
 
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка обработки: {e}")
 
-app = Flask(__name__)
+@bot.message_handler(content_types=['text'])
+def handle_all(message):
+    threading.Thread(target=process_logic, args=(message,)).start()
+
 @app.route('/' + TOKEN, methods=['POST'])
 def getMessage():
     bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
-    return "!", 200
+    return "ok", 200
 
 @app.route('/')
-def webhook(): return "Питер свободен от лимитов и готов пить пиво!", 200
+def webhook(): return "Питер Гриффин онлайн!", 200
 
 if __name__ == "__main__":
     host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
