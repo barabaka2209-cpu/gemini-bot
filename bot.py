@@ -3,10 +3,10 @@ import os
 import random
 import time
 import threading
+import base64
 from flask import Flask, request
 from groq import Groq
 
-# Конфиг из переменных окружения
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_API_KEY")
 OWNER_ID = 8067227894 
@@ -19,84 +19,85 @@ PETER_IMAGES = ["https://i.postimg.cc/zV0Lqc8k/image.jpg"]
 IMAGE_CHANCE = 10 
 
 def ask_ai(prompt_text, system_prompt):
-    """Запрос к Llama 3 через Groq (официально и быстро)"""
     try:
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text}
-            ],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt_text}],
             temperature=0.8,
             max_tokens=500
         )
         return completion.choices[0].message.content
     except Exception as e:
-        print(f"Ошибка ИИ: {e}")
-        return "мои мозги сейчас в отключке. это даже хуже, чем тот раз, когда я пытался переспорить гигантского цыпленка."
+        print(f"Ошибка текста: {e}")
+        return "мои мозги сейчас в отключке."
 
-def is_admin(chat_id, user_id):
-    if user_id == OWNER_ID or chat_id > 0: return True
+def ask_ai_vision(image_bytes, system_prompt):
+    """Функция для анализа фото через Vision-модель Groq"""
     try:
-        admins = bot.get_chat_administrators(chat_id)
-        return any(admin.user.id == user_id for admin in admins)
-    except: return False
+        # Кодируем картинку в base64
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        completion = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview", # Специальная модель для фото
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"{system_prompt}\n\nпрокомментируй это фото:"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        print(f"Ошибка Vision: {e}")
+        return "я ослеп! это даже хуже чем тот раз когда я смотрел на сварку без маски."
 
 def process_logic(message):
-    """Основная логика в отдельном потоке"""
     try:
-        # Настройка промпта
+        # Промпт Питера
         if message.chat.type == "private":
             p = "ты вежливый ии-помощник. отвечай кратко и строго строчными буквами."
         elif message.from_user.id == OWNER_ID:
-            p = "ты преданный слуга своего господина. называй его господином, будь почтителен. пиши строго строчными буквами."
+            p = "ты преданный слуга своего господина. называй его господином. пиши строго строчными буквами."
         else:
             p = ("ты питер гриффин. ты ворчливый, ленивый и глуповатый. "
                  "постоянно шути, используй 'это даже хуже, чем тот раз, когда я...'. "
                  "отвечай едко и СТРОГО строчными буквами.")
 
-        text_lower = message.text.lower()
-        parts = text_lower.split()
-        cmd = parts[0] if parts else ""
-
-        # Команда Правила
-        if cmd in ["правила", "/rules"]:
-            bot.reply_to(message, "мои правила: я босс, ты нет. не спамить. не ныть. всё.")
-            return
-
-        # Модерация (бан, мут, кик)
-        if message.reply_to_message and cmd in ["бан", "мут", "кик", "разбан", "анмут"]:
-            if not is_admin(message.chat.id, message.from_user.id):
-                bot.reply_to(message, "заткнись, лузер. у тебя нет прав.")
+        # ОБРАБОТКА ТЕКСТА
+        if message.content_type == 'text':
+            text_lower = message.text.lower()
+            if text_lower in ["правила", "/rules"]:
+                bot.reply_to(message, "мои правила: я босс, ты нет. свободен.")
                 return
+
+            bot.send_chat_action(message.chat.id, 'typing')
+            ans = ask_ai(message.text, p)
+            bot.reply_to(message, ans.lower() if ans else "пусто")
+
+        # ОБРАБОТКА ФОТО
+        elif message.content_type == 'photo':
+            bot.send_chat_action(message.chat.id, 'typing')
             
-            target_id = message.reply_to_message.from_user.id
-            try:
-                if cmd == "бан": bot.ban_chat_member(message.chat.id, target_id)
-                elif cmd == "кик": 
-                    bot.ban_chat_member(message.chat.id, target_id)
-                    bot.unban_chat_member(message.chat.id, target_id)
-                elif cmd == "мут": bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time() + 3600))
-                elif cmd == "анмут": bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
-                
-                bot.reply_to(message, f"хехехе, {cmd} выполнен успешно. я великолепен.")
-            except:
-                bot.reply_to(message, "дай мне админку сначала, гений.")
-            return
-
-        # Ответ ИИ
-        bot.send_chat_action(message.chat.id, 'typing')
-        ans = ask_ai(message.text, p)
-        bot.reply_to(message, ans.lower() if ans else "пусто")
-
-        # Рандомная картинка
-        if message.chat.type != "private" and random.randint(1, 100) <= IMAGE_CHANCE:
-            bot.send_photo(message.chat.id, random.choice(PETER_IMAGES))
+            # Получаем файл
+            file_id = message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            # Отправляем в Vision модель
+            ans = ask_ai_vision(downloaded_file, p)
+            bot.reply_to(message, ans.lower() if ans else "ничего не вижу")
 
     except Exception as e:
         print(f"Ошибка обработки: {e}")
 
-@bot.message_handler(content_types=['text'])
+@bot.message_handler(content_types=['text', 'photo'])
 def handle_all(message):
     threading.Thread(target=process_logic, args=(message,)).start()
 
@@ -106,7 +107,7 @@ def getMessage():
     return "ok", 200
 
 @app.route('/')
-def webhook(): return "Питер Гриффин онлайн!", 200
+def webhook(): return "Питер видит и слышит!", 200
 
 if __name__ == "__main__":
     host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
