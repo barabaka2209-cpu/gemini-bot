@@ -1,12 +1,9 @@
 import telebot
-import google.generativeai as genai
 import os
 import random
-from io import BytesIO
-from PIL import Image
-from flask import Flask, request
-from google.api_core import exceptions
 import time
+from flask import Flask, request
+from g4f.client import Client # Импортируем бесплатную нейросеть без лимитов
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OWNER_ID = 8067227894 
@@ -18,34 +15,29 @@ PETER_IMAGES = [
 
 IMAGE_CHANCE = 10 
 
-def collect_keys():
-    found_keys = []
-    k0 = os.environ.get("GEMINI_API_KEY")
-    if k0: found_keys.append(k0)
-    for i in range(1, 16):
-        k = os.environ.get(f"GEMINI_API_KEY{i}")
-        if k: found_keys.append(k)
-    return found_keys
-
-API_KEYS = collect_keys()
-current_key_idx = 0
 bot = telebot.TeleBot(TOKEN)
+ai_client = Client() # Инициализируем клиента G4F
 
-def ask_gemini(prompt_parts):
-    global current_key_idx
-    if not API_KEYS: return "ошибка: нет ключей."
-    for _ in range(len(API_KEYS)):
-        try:
-            genai.configure(api_key=API_KEYS[current_key_idx])
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            return model.generate_content(prompt_parts).text
-        except exceptions.ResourceExhausted:
-            current_key_idx = (current_key_idx + 1) % len(API_KEYS)
-            continue 
-        except Exception:
-            current_key_idx = (current_key_idx + 1) % len(API_KEYS)
-            continue
-    return "шеф, все ключи пусты."
+def ask_ai(prompt_text, image_bytes=None):
+    """Функция для общения с бесплатной нейросетью"""
+    try:
+        if image_bytes:
+            # Если есть картинка, передаем ее. G4F сам подберет провайдера с поддержкой Vision
+            response = ai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt_text}],
+                image=image_bytes
+            )
+        else:
+            # Для обычного текста
+            response = ai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt_text}],
+            )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Ошибка нейросети: {e}")
+        return "мои мозги сейчас в отключке. иди за пивом и спроси позже."
 
 def is_admin(chat_id, user_id):
     if user_id == OWNER_ID: return True
@@ -60,7 +52,7 @@ def is_admin(chat_id, user_id):
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, f"хехехе, питер гриффин на связи. ключей: {len(API_KEYS)}.")
+    bot.reply_to(message, "хехехе, питер гриффин на связи. я теперь работаю без лимитов, лузеры.")
 
 @bot.message_handler(content_types=['new_chat_members'])
 def welcome_new_member(message):
@@ -122,8 +114,7 @@ def handle_all(message):
                         bot.reply_to(message, f"пнул под зад {target_name}. пусть заходит заново, если поумнеет.")
                     
                     elif cmd == "мут":
-                        # --- УМНЫЙ МУТ С РАСЧЕТОМ ВРЕМЕНИ ---
-                        duration_seconds = 3600 # 1 час по умолчанию
+                        duration_seconds = 3600 
                         time_text = "на час"
 
                         if len(parts) >= 2 and parts[1].isdigit():
@@ -162,7 +153,10 @@ def handle_all(message):
                 return
 
             # ОТВЕТ НЕЙРОСЕТИ
-            ans = ask_gemini(f"{p}\n\nсообщение: {message.text}")
+            # Отправляем боту индикатор "печатает" (чтобы юзеры видели, что бот думает)
+            bot.send_chat_action(message.chat.id, 'typing')
+            
+            ans = ask_ai(f"{p}\n\nсообщение: {message.text}")
             final_text = ans.lower() if ans else "пустой ответ"
             bot.reply_to(message, final_text)
 
@@ -171,16 +165,21 @@ def handle_all(message):
                 if random.randint(1, 100) <= IMAGE_CHANCE:
                     bot.send_photo(message.chat.id, random.choice(PETER_IMAGES)) 
 
-        # ОБРАБОТКА ФОТО ДЛЯ ID
+        # ОБРАБОТКА ФОТО ДЛЯ ID И НЕЙРОСЕТИ
         elif message.content_type == 'photo':
             file_id = message.photo[-1].file_id 
             
             if message.from_user.id == OWNER_ID:
                 bot.reply_to(message, f"Код этой картинки для списка (скопируй):\n`{file_id}`", parse_mode="Markdown")
 
+            bot.send_chat_action(message.chat.id, 'typing')
+            
+            # Скачиваем картинку в память
             file_info = bot.get_file(file_id)
-            img = Image.open(BytesIO(bot.download_file(file_info.file_path)))
-            ans = ask_gemini([f"{p}\n\nпрокомментируй фото:", img])
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            # Передаем картинку в нейросеть
+            ans = ask_ai(f"{p}\n\nпрокомментируй фото:", image_bytes=downloaded_file)
             bot.reply_to(message, ans.lower() if ans else "пустой ответ")
 
     except Exception as e:
@@ -193,7 +192,7 @@ def getMessage():
     return "!", 200
 
 @app.route('/')
-def webhook(): return f"Питер в строю! Ключей: {len(API_KEYS)}", 200
+def webhook(): return "Питер свободен от лимитов и готов пить пиво!", 200
 
 if __name__ == "__main__":
     host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
